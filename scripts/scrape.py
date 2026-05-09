@@ -1,17 +1,21 @@
 """
 scrape.py — single-session scraper with mid-run captcha polling.
 
-Flow:
-  1. Open browser, load login page, capture captcha.png, commit it.
-  2. Poll GitHub repo variable CAPTCHA_ANSWER every 10s (up to 5 min).
-  3. Once you set CAPTCHA_ANSWER in repo Settings → Variables → Actions,
-     script reads it, clears it, fills captcha, completes login, scrapes.
+Confirmed login flow:
+  Page 1: USER ID + captcha → LOGIN  (URL: #/)
+  Page 2: Password* → LOGIN          (URL: #/pwdlogin)
+  Then: dashboard                    (URL: #/dashbord)
 
-Env vars (set as GitHub Secrets):
-  JUIT_USERNAME
-  JUIT_PASSWORD
-  GH_TOKEN        — a fine-grained PAT with "Variables" read+write on this repo
-  GH_REPO         — e.g. "theaaryansinghh/lessmis-rables"
+Flow:
+  1. Open browser, fill username, commit captcha.png.
+  2. Poll CAPTCHA_ANSWER variable every 10s.
+  3. You set CAPTCHA_ANSWER to the captcha text.
+  4. Script fills captcha, clicks LOGIN, waits for #/pwdlogin.
+  5. Script fills password, clicks LOGIN, waits for #/dashbord.
+  6. Scrapes all endpoints, commits JSONs.
+
+Secrets needed:
+  JUIT_USERNAME, JUIT_PASSWORD, GH_TOKEN, GH_REPO
 """
 
 import json, time, base64, os, subprocess, requests, urllib3
@@ -29,7 +33,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 USERNAME  = os.environ["JUIT_USERNAME"]
 PASSWORD  = os.environ["JUIT_PASSWORD"]
 GH_TOKEN  = os.environ["GH_TOKEN"]
-GH_REPO   = os.environ["GH_REPO"]          # "owner/repo"
+GH_REPO   = os.environ["GH_REPO"]
 SEMESTER  = "2026EVESEM"
 LOGIN_URL = "https://webportal.juit.ac.in:6011/studentportal/#/"
 BASE_URL  = "https://webportal.juit.ac.in:6011"
@@ -47,45 +51,59 @@ VAR_NAME = "CAPTCHA_ANSWER"
 # ── GitHub variable helpers ──────────────────────────────────────────────────
 
 def get_captcha_answer():
-    """Return current value of CAPTCHA_ANSWER variable, or None."""
     url = f"https://api.github.com/repos/{GH_REPO}/actions/variables/{VAR_NAME}"
     try:
         r = requests.get(url, headers=GH_HEADERS, timeout=10)
-        print(f"  [poll] status={r.status_code} body={r.text[:200]}")
+        print(f"  [poll] status={r.status_code} value='{r.json().get('value','')}'")
         if r.status_code == 200:
             val = r.json().get("value", "").strip()
-            return val if val and val != "WAITING" else None
+            return val if val and val not in ("WAITING", "") else None
     except Exception as e:
-        print(f"  [poll] request error: {e}")
+        print(f"  [poll] error: {e}")
     return None
 
-def clear_captcha_answer():
-    """Reset CAPTCHA_ANSWER back to WAITING so it's ready for next run."""
+def set_var(value):
     url = f"https://api.github.com/repos/{GH_REPO}/actions/variables/{VAR_NAME}"
-    # Try PATCH (update existing)
     r = requests.patch(url, headers=GH_HEADERS, timeout=10,
-                       json={"name": VAR_NAME, "value": "WAITING"})
+                       json={"name": VAR_NAME, "value": value})
     if r.status_code not in (200, 201, 204):
-        # Variable might not exist yet — create it
-        create_url = f"https://api.github.com/repos/{GH_REPO}/actions/variables"
-        requests.post(create_url, headers=GH_HEADERS, timeout=10,
-                      json={"name": VAR_NAME, "value": "WAITING"})
-    print(f"CAPTCHA_ANSWER reset to WAITING.")
+        requests.post(
+            f"https://api.github.com/repos/{GH_REPO}/actions/variables",
+            headers=GH_HEADERS, timeout=10,
+            json={"name": VAR_NAME, "value": value}
+        )
+    print(f"  CAPTCHA_ANSWER set to '{value}'")
 
-def commit_captcha(path="captcha.png"):
-    """Commit captcha.png to repo so you can read it in the GitHub app."""
-    subprocess.run(["git", "config", "user.name", "github-actions[bot]"], check=True)
+def git_commit_push(files, message):
+    subprocess.run(["git", "config", "user.name",  "github-actions[bot]"], check=True)
     subprocess.run(["git", "config", "user.email", "github-actions[bot]@users.noreply.github.com"], check=True)
-    subprocess.run(["git", "add", path], check=True)
-    result = subprocess.run(["git", "commit", "-m", "chore: update captcha [skip ci]"],
-                             capture_output=True, text=True)
+    for f in files:
+        subprocess.run(["git", "add", f], check=True)
+    result = subprocess.run(
+        ["git", "commit", "-m", message],
+        capture_output=True, text=True
+    )
     if result.returncode == 0:
         subprocess.run(["git", "push"], check=True)
-        print("captcha.png committed and pushed.")
+        print(f"Committed: {message}")
     else:
-        print("Nothing new to commit for captcha.")
+        print(f"Nothing to commit ({message})")
 
-# ── Chrome ───────────────────────────────────────────────────────────────────
+# ── JS helper to set Angular input value ────────────────────────────────────
+
+def angular_set(driver, element, value):
+    """Set input value and fire Angular-compatible events."""
+    driver.execute_script("""
+        var el = arguments[0];
+        var setter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value').set;
+        setter.call(el, arguments[1]);
+        el.dispatchEvent(new Event('input',  { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur',   { bubbles: true }));
+    """, element, value)
+
+# ── Chrome setup ─────────────────────────────────────────────────────────────
 
 options = webdriver.ChromeOptions()
 options.add_argument("--headless")
@@ -97,16 +115,19 @@ options.add_experimental_option("excludeSwitches", ["enable-automation"])
 options.add_experimental_option("useAutomationExtension", False)
 options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
-driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+driver = webdriver.Chrome(
+    service=Service(ChromeDriverManager().install()), options=options)
 driver.execute_cdp_cmd("Network.enable", {})
-driver.execute_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+driver.execute_script(
+    "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
 wait = WebDriverWait(driver, 45)
 
-# ── Step 1: Load page and capture captcha ────────────────────────────────────
+# ── Step 1: Load page, fill username, capture captcha ────────────────────────
 
 print("Opening login page...")
 driver.get(LOGIN_URL)
 time.sleep(6)
+print(f"URL: {driver.current_url}")
 
 # Grab captcha image from network logs
 captcha_saved = False
@@ -120,7 +141,8 @@ for _ in range(40):
                 rid = msg["params"]["requestId"]
                 time.sleep(1)
                 try:
-                    body = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": rid})
+                    body = driver.execute_cdp_cmd(
+                        "Network.getResponseBody", {"requestId": rid})
                     b64 = (json.loads(body.get("body", "{}"))
                            .get("response", {}).get("captcha", {}).get("image", ""))
                     if b64:
@@ -141,168 +163,111 @@ if not captcha_saved:
     driver.quit()
     raise RuntimeError("Could not capture captcha image.")
 
-# Fill username now (before pausing — keeps session warm)
-try:
-    u = wait.until(EC.presence_of_element_located(
-        (By.XPATH, '//input[contains(@placeholder,"USER ID") or contains(@placeholder,"User ID")]')))
-    u.clear()
-    u.send_keys(USERNAME)
-    print("Username prefilled.")
-except Exception as e:
-    print(f"Username field error: {e}")
+# Fill username
+u = wait.until(EC.presence_of_element_located(
+    (By.XPATH, '//input[contains(@placeholder,"USER ID") or contains(@placeholder,"User ID")]')))
+angular_set(driver, u, USERNAME)
+print(f"Username filled: {USERNAME}")
 
-# Commit captcha so you can read it in the GitHub app
-commit_captcha("captcha.png")
+# Commit captcha for you to read
+git_commit_push(["captcha.png"], "chore: update captcha [skip ci]")
+set_var("WAITING")
 
-# ── Step 2: Poll for CAPTCHA_ANSWER ─────────────────────────────────────────
+# ── Step 2: Poll for captcha answer ─────────────────────────────────────────
 
-print("\nWaiting for you to set CAPTCHA_ANSWER in repo Settings → Variables → Actions...")
-print("You have 5 minutes.\n")
-
+print("\nWaiting for CAPTCHA_ANSWER (5 min timeout)...")
 captcha_answer = None
-for i in range(30):   # 30 x 10s = 5 minutes
+for i in range(30):
     time.sleep(10)
     answer = get_captcha_answer()
     if answer:
         captcha_answer = answer
-        print(f"Got captcha answer: '{captcha_answer}'")
+        print(f"Got captcha: '{captcha_answer}'")
         break
-    print(f"  [{(i+1)*10}s] Still waiting for CAPTCHA_ANSWER...")
+    print(f"  [{(i+1)*10}s] waiting...")
 
 if not captcha_answer:
     driver.quit()
-    raise RuntimeError("Timed out waiting for CAPTCHA_ANSWER. Run the workflow again.")
+    raise RuntimeError("Timed out. Run workflow again.")
 
-clear_captcha_answer()
+set_var("WAITING")
 
-# ── Step 3: Complete login in the same browser session ───────────────────────
+# ── Step 3: Fill captcha and submit page 1 ───────────────────────────────────
 
-# Fill captcha using JS to trigger Angular change detection
-try:
-    c = wait.until(EC.presence_of_element_located((By.XPATH,
-        '//input[contains(@placeholder,"shown in the image") or '
-        'contains(@placeholder,"Enter the text") or '
-        'contains(@placeholder,"captcha") or '
-        'contains(@placeholder,"Captcha")]')))
-    c.clear()
-    driver.execute_script("""
-        var el = arguments[0];
-        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype, 'value').set;
-        nativeInputValueSetter.call(el, arguments[1]);
-        el.dispatchEvent(new Event('input', { bubbles: true }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.dispatchEvent(new Event('blur', { bubbles: true }));
-    """, c, captcha_answer)
-    print(f"Captcha filled via Angular-aware JS: '{captcha_answer}'")
-except Exception as e:
-    print(f"Captcha field error: {e}")
+print("Filling captcha field...")
 
-time.sleep(2)
+# Re-confirm username is still there
+u = wait.until(EC.presence_of_element_located(
+    (By.XPATH, '//input[contains(@placeholder,"USER ID") or contains(@placeholder,"User ID")]')))
+current = u.get_attribute("value")
+print(f"Username field value: '{current}'")
+if current != USERNAME:
+    print("Username was cleared, re-filling...")
+    angular_set(driver, u, USERNAME)
+    time.sleep(0.5)
 
-# Debug: print all buttons
-all_btns = driver.find_elements(By.XPATH, '//button')
-print(f"Buttons on page: {len(all_btns)}")
-for b in all_btns:
-    print(f"  text='{b.text.strip()}' enabled={b.is_enabled()} displayed={b.is_displayed()}")
-
-# First LOGIN
-print("Clicking first LOGIN...")
-login_clicked = False
-for xpath in [
-    "//*[normalize-space(text())='LOGIN']",
-    "//*[normalize-space(text())='Login']",
-    "//button[contains(.,'LOGIN')]",
-    "//button[contains(.,'Login')]",
-    "//button[@type='submit']",
-    "//button",
-]:
-    try:
-        btn = WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.XPATH, xpath)))
-        print(f"Found button: '{btn.text.strip()}'")
-        btn.click()
-        login_clicked = True
-        print("First LOGIN clicked.")
-        break
-    except Exception:
-        continue
-
-if not login_clicked:
-    try:
-        driver.execute_script("document.querySelector('button[type=submit]').click()")
-        login_clicked = True
-        print("First LOGIN via JS submit.")
-    except Exception as e:
-        print(f"JS submit also failed: {e}")
-
-# Wait for password field
-print("Waiting for password field...")
-time.sleep(8)
-
-# Debug: print all inputs now
-all_inputs = driver.find_elements(By.XPATH, '//input')
-print(f"Inputs after first LOGIN ({len(all_inputs)}):")
-for inp in all_inputs:
-    print(f"  type={inp.get_attribute('type')} placeholder='{inp.get_attribute('placeholder')}' visible={inp.is_displayed()}")
-
-driver.save_screenshot("debug_after_first_login.png")
-
-# Find password field
-p = None
-for xpath in [
-    '//input[@type="password"]',
-    '//input[contains(@placeholder,"Password")]',
-    '//input[contains(@placeholder,"password")]',
-    '//input[contains(@placeholder,"PASSWORD")]',
-]:
-    try:
-        p = WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, xpath)))
-        print(f"Password field found: {xpath}")
-        break
-    except TimeoutException:
-        print(f"Not found: {xpath}")
-
-if not p:
-    subprocess.run(["git", "add", "debug_after_first_login.png"], capture_output=True)
-    subprocess.run(["git", "commit", "-m", "debug: after first login [skip ci]"], capture_output=True)
-    subprocess.run(["git", "push"], capture_output=True)
-    driver.quit()
-    raise RuntimeError("Password field not found. Check debug_after_first_login.png in repo.")
-
-p.clear()
-p.send_keys(PASSWORD)
-print("Password entered.")
-
+# Fill captcha
+c = wait.until(EC.presence_of_element_located(
+    (By.XPATH, '//input[contains(@placeholder,"shown in the image") or '
+               'contains(@placeholder,"Enter the text")]')))
+angular_set(driver, c, captcha_answer)
 time.sleep(1)
 
-# Second LOGIN
-print("Clicking second LOGIN...")
-for xpath in [
-    "//*[normalize-space(text())='LOGIN']",
-    "//*[normalize-space(text())='Login']",
-    "//button[contains(.,'LOGIN')]",
-    "//button[@type='submit']",
-]:
-    try:
-        btn = WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.XPATH, xpath)))
-        btn.click()
-        print("Second LOGIN clicked.")
-        break
-    except Exception:
-        continue
+# Verify form values
+print("Form values before LOGIN:")
+for inp in driver.find_elements(By.XPATH, '//input[@placeholder]'):
+    print(f"  '{inp.get_attribute('placeholder')}' = '{inp.get_attribute('value')}'")
+
+# Click LOGIN (page 1)
+btn = wait.until(EC.element_to_be_clickable(
+    (By.XPATH, "//button[contains(.,'LOGIN') or contains(.,'Login')]")))
+btn.click()
+print("Page 1 LOGIN clicked.")
+
+# ── Step 4: Wait for #/pwdlogin and fill password ────────────────────────────
+
+print("Waiting for password page (#/pwdlogin)...")
+try:
+    WebDriverWait(driver, 30).until(
+        lambda d: "pwdlogin" in d.current_url or "dashbord" in d.current_url)
+    print(f"URL after page 1 LOGIN: {driver.current_url}")
+except TimeoutException:
+    driver.save_screenshot("debug_stuck_after_login1.png")
+    git_commit_push(["debug_stuck_after_login1.png"], "debug: stuck after login1 [skip ci]")
+    driver.quit()
+    raise RuntimeError(
+        "Did not reach #/pwdlogin after 30s. "
+        "Captcha was probably wrong. Check debug_stuck_after_login1.png.")
+
+if "pwdlogin" in driver.current_url:
+    time.sleep(2)
+    # Password field placeholder is "Password*"
+    p = wait.until(EC.presence_of_element_located(
+        (By.XPATH, '//input[@type="password"] | '
+                   '//input[contains(@placeholder,"Password") or '
+                   'contains(@placeholder,"password")]')))
+    angular_set(driver, p, PASSWORD)
+    print("Password filled.")
+    time.sleep(1)
+
+    btn2 = wait.until(EC.element_to_be_clickable(
+        (By.XPATH, "//button[contains(.,'LOGIN') or contains(.,'Login')]")))
+    btn2.click()
+    print("Page 2 LOGIN clicked.")
 
 print("Waiting for dashboard...")
-time.sleep(12)
-print(f"URL: {driver.current_url}")
+time.sleep(10)
+print(f"Final URL: {driver.current_url}")
 
 if "dashbord" not in driver.current_url and "dashboard" not in driver.current_url.lower():
     driver.save_screenshot("debug_login_failed.png")
+    git_commit_push(["debug_login_failed.png"], "debug: login failed [skip ci]")
     driver.quit()
-    raise RuntimeError(f"Login failed. Still at: {driver.current_url}")
+    raise RuntimeError(f"Login failed. URL: {driver.current_url}")
 
-print("Logged in successfully!")
+print("Logged in!")
 
-# ── Step 4: Navigate to attendance to capture auth headers ───────────────────
+# ── Step 5: Navigate to attendance to capture auth headers ────────────────────
 
 try:
     el = wait.until(EC.element_to_be_clickable(
@@ -342,24 +307,27 @@ except Exception as e:
 
 time.sleep(6)
 
-# ── Step 5: Capture auth from network logs ───────────────────────────────────
+# ── Step 6: Capture auth from network logs ────────────────────────────────────
 
-def get_req(logs, fragment):
-    for req in reversed(logs):
-        if fragment in req.get("url", ""):
-            return req.get("headers", {}), req.get("postData", "")
+def get_req(fragment):
+    for log in reversed(driver.get_log("performance")):
+        try:
+            msg = json.loads(log["message"])["message"]
+            if (msg["method"] == "Network.requestWillBeSent"
+                    and fragment in msg["params"]["request"].get("url", "")):
+                req = msg["params"]["request"]
+                return req.get("headers", {}), req.get("postData", "")
+        except Exception:
+            continue
     return None, None
 
-all_logs = [json.loads(l["message"])["message"]["params"]["request"]
-            for l in driver.get_log("performance")
-            if "Network.requestWillBeSent" in l["message"]]
-
-att_headers, att_payload   = get_req(all_logs, "getstudentattendancedetail")
-_,           short_payload = get_req(all_logs, "getstudentbankinfo")
-_,           fee_payload   = get_req(all_logs, "getmyactivefeeevents")
+att_headers, att_payload   = get_req("getstudentattendancedetail")
+_,           short_payload = get_req("getstudentbankinfo")
+_,           fee_payload   = get_req("getmyactivefeeevents")
 
 if not att_headers:
     driver.save_screenshot("debug_no_auth.png")
+    git_commit_push(["debug_no_auth.png"], "debug: no auth headers [skip ci]")
     driver.quit()
     raise RuntimeError("Could not capture auth headers.")
 
@@ -370,13 +338,13 @@ for c in driver.get_cookies():
 driver.quit()
 print("Browser closed.")
 
-# ── Step 6: Scrape all endpoints ─────────────────────────────────────────────
+# ── Step 7: Scrape all endpoints ──────────────────────────────────────────────
 
 hdrs = {
-    "Accept": "application/json, text/plain, */*",
+    "Accept":       "application/json, text/plain, */*",
     "Content-Type": "application/json",
-    "Referer": "https://webportal.juit.ac.in:6011/studentportal/",
-    "User-Agent": "Mozilla/5.0",
+    "Referer":      "https://webportal.juit.ac.in:6011/studentportal/",
+    "User-Agent":   "Mozilla/5.0",
 }
 if att_headers.get("Authorization"): hdrs["Authorization"] = att_headers["Authorization"]
 if att_headers.get("LocalName"):     hdrs["LocalName"]     = att_headers["LocalName"]
@@ -384,7 +352,8 @@ if att_headers.get("LocalName"):     hdrs["LocalName"]     = att_headers["LocalN
 def post(path, payload, label):
     print(f"Fetching [{label}]...")
     try:
-        r = sess.post(f"{API_BASE}/{path}", headers=hdrs, data=payload, verify=False, timeout=30)
+        r = sess.post(f"{API_BASE}/{path}", headers=hdrs,
+                      data=payload, verify=False, timeout=30)
         print(f"  {r.status_code}")
         if r.status_code == 200:
             try:
