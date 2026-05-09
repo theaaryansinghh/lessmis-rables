@@ -1,0 +1,46 @@
+name: "Step 2 — Submit Captcha & Scrape"
+
+on:
+  workflow_dispatch:
+    inputs:
+      captcha_text:
+        description: "Enter the captcha text you see in captcha.png"
+        required: true
+        type: string
+
+jobs:
+  scrape-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install selenium webdriver-manager requests urllib3 tabulate
+
+      - name: Install Chrome
+        run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+
+      - name: Run Step 2 (scrape with captcha)
+        env:
+          JUIT_USERNAME: ${{ secrets.JUIT_USERNAME }}
+          JUIT_PASSWORD: ${{ secrets.JUIT_PASSWORD }}
+          CAPTCHA_TEXT:  ${{ github.event.inputs.captcha_text }}
+        run: python scripts/step2_scrape.py
+
+      - name: Commit scraped data
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add juit_data/
+          git commit -m "data: refresh portal data $(date -u '+%Y-%m-%d %H:%M UTC') [skip ci]" || echo "Nothing to commit"
+          git push

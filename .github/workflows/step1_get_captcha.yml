@@ -1,0 +1,40 @@
+name: "Step 1 — Get Captcha"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  get-captcha:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install selenium webdriver-manager requests urllib3
+
+      - name: Install Chrome
+        run: |
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
+
+      - name: Run Step 1 (fetch captcha)
+        env:
+          JUIT_USERNAME: ${{ secrets.JUIT_USERNAME }}
+          JUIT_PASSWORD: ${{ secrets.JUIT_PASSWORD }}
+        run: python scripts/step1_get_captcha.py
+
+      - name: Commit captcha image
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add captcha.png session_state.json
+          git commit -m "chore: update captcha [skip ci]" || echo "Nothing to commit"
+          git push
