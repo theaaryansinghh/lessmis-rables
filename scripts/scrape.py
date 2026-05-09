@@ -307,6 +307,16 @@ except Exception as e:
 
 time.sleep(6)
 
+# Also navigate to fee page to capture fee_payload
+try:
+    driver.get(f"{LOGIN_URL.replace('#/', '#/student/feeDetails')}")
+    time.sleep(4)
+    print("Navigated to fee page.")
+except Exception as e:
+    print(f"Fee nav error: {e}")
+
+time.sleep(3)
+
 # ── Step 6: Capture auth from network logs ────────────────────────────────────
 
 def get_req(fragment):
@@ -322,7 +332,6 @@ def get_req(fragment):
     return None, None
 
 att_headers, att_payload   = get_req("getstudentattendancedetail")
-_,           short_payload = get_req("getstudentbankinfo")
 _,           fee_payload   = get_req("getmyactivefeeevents")
 
 if not att_headers:
@@ -332,6 +341,14 @@ if not att_headers:
     raise RuntimeError("Could not capture auth headers.")
 
 print("Auth headers captured.")
+
+# short_payload: most endpoints use the same encrypted student ID as the
+# attendance payload. Extract it directly from att_payload.
+# att_payload is the full attendance request body — the portal uses the
+# same encrypted studentid field for all other endpoints too.
+short_payload = att_payload
+print(f"Using att_payload as short_payload (length: {len(att_payload) if att_payload else 0})")
+
 sess = requests.Session()
 for c in driver.get_cookies():
     sess.cookies.set(c["name"], c["value"])
