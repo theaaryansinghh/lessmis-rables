@@ -122,8 +122,14 @@ click_any([
 ])
 print("Waiting for password field (up to 45s)...")
 time.sleep(5)
+
 driver.save_screenshot("debug_after_first_login.png")
 
+with open("debug_page.html", "w", encoding="utf-8") as f:
+    f.write(driver.page_source)
+
+print("Saved HTML debug page")
+print("Current URL:", driver.current_url)
 # Password — longer wait
 password_input = find_any([
     '//input[@type="password"]',
