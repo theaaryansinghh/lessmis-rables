@@ -203,18 +203,44 @@ except Exception as e:
 
 # Wait for password field
 print("Waiting for password field...")
-time.sleep(5)
+time.sleep(6)
 
-try:
-    p = WebDriverWait(driver, 45).until(EC.presence_of_element_located((By.XPATH,
-        '//input[@type="password" or contains(@placeholder,"Password") or contains(@placeholder,"password")]')))
-    p.clear()
-    p.send_keys(PASSWORD)
-    print("Password entered.")
-except TimeoutException:
-    driver.save_screenshot("debug_no_password.png")
+# Print all input fields visible on page right now
+all_inputs = driver.find_elements(By.XPATH, '//input')
+print(f"Inputs on page after first LOGIN: {len(all_inputs)}")
+for inp in all_inputs:
+    print(f"  type={inp.get_attribute('type')} placeholder={inp.get_attribute('placeholder')} visible={inp.is_displayed()}")
+
+driver.save_screenshot("debug_after_first_login.png")
+
+# Try each password XPath separately
+password_xpaths = [
+    '//input[@type="password"]',
+    '//input[contains(@placeholder,"Password")]',
+    '//input[contains(@placeholder,"password")]',
+    '//input[contains(@placeholder,"PASSWORD")]',
+]
+p = None
+for xpath in password_xpaths:
+    try:
+        p = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, xpath)))
+        print(f"Password field found with: {xpath}")
+        break
+    except TimeoutException:
+        print(f"Not found: {xpath}")
+        continue
+
+if not p:
+    # Commit screenshot so we can see it
+    subprocess.run(["git", "add", "debug_after_first_login.png"], capture_output=True)
+    subprocess.run(["git", "commit", "-m", "debug: after first login screenshot [skip ci]"], capture_output=True)
+    subprocess.run(["git", "push"], capture_output=True)
     driver.quit()
-    raise RuntimeError("Password field not found — captcha was likely wrong. Try again.")
+    raise RuntimeError("Password field not found. Check debug_after_first_login.png in repo.")
+
+p.clear()
+p.send_keys(PASSWORD)
+print("Password entered.")
 
 time.sleep(1)
 
