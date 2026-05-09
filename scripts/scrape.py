@@ -177,7 +177,7 @@ clear_captcha_answer()
 
 # ── Step 3: Complete login in the same browser session ───────────────────────
 
-# Fill captcha
+# Fill captcha using JS to trigger Angular change detection
 try:
     c = wait.until(EC.presence_of_element_located((By.XPATH,
         '//input[contains(@placeholder,"shown in the image") or '
@@ -185,55 +185,86 @@ try:
         'contains(@placeholder,"captcha") or '
         'contains(@placeholder,"Captcha")]')))
     c.clear()
-    c.send_keys(captcha_answer)
-    print("Captcha filled.")
+    driver.execute_script("""
+        var el = arguments[0];
+        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value').set;
+        nativeInputValueSetter.call(el, arguments[1]);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        el.dispatchEvent(new Event('blur', { bubbles: true }));
+    """, c, captcha_answer)
+    print(f"Captcha filled via Angular-aware JS: '{captcha_answer}'")
 except Exception as e:
     print(f"Captcha field error: {e}")
 
-time.sleep(1)
+time.sleep(2)
+
+# Debug: print all buttons
+all_btns = driver.find_elements(By.XPATH, '//button')
+print(f"Buttons on page: {len(all_btns)}")
+for b in all_btns:
+    print(f"  text='{b.text.strip()}' enabled={b.is_enabled()} displayed={b.is_displayed()}")
 
 # First LOGIN
-try:
-    btn = wait.until(EC.element_to_be_clickable((By.XPATH,
-        "//*[normalize-space(text())='LOGIN' or normalize-space(text())='Login']")))
-    driver.execute_script("arguments[0].click();", btn)
-    print("First LOGIN clicked.")
-except Exception as e:
-    print(f"First LOGIN error: {e}")
+print("Clicking first LOGIN...")
+login_clicked = False
+for xpath in [
+    "//*[normalize-space(text())='LOGIN']",
+    "//*[normalize-space(text())='Login']",
+    "//button[contains(.,'LOGIN')]",
+    "//button[contains(.,'Login')]",
+    "//button[@type='submit']",
+    "//button",
+]:
+    try:
+        btn = WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+        print(f"Found button: '{btn.text.strip()}'")
+        btn.click()
+        login_clicked = True
+        print("First LOGIN clicked.")
+        break
+    except Exception:
+        continue
+
+if not login_clicked:
+    try:
+        driver.execute_script("document.querySelector('button[type=submit]').click()")
+        login_clicked = True
+        print("First LOGIN via JS submit.")
+    except Exception as e:
+        print(f"JS submit also failed: {e}")
 
 # Wait for password field
 print("Waiting for password field...")
-time.sleep(6)
+time.sleep(8)
 
-# Print all input fields visible on page right now
+# Debug: print all inputs now
 all_inputs = driver.find_elements(By.XPATH, '//input')
-print(f"Inputs on page after first LOGIN: {len(all_inputs)}")
+print(f"Inputs after first LOGIN ({len(all_inputs)}):")
 for inp in all_inputs:
-    print(f"  type={inp.get_attribute('type')} placeholder={inp.get_attribute('placeholder')} visible={inp.is_displayed()}")
+    print(f"  type={inp.get_attribute('type')} placeholder='{inp.get_attribute('placeholder')}' visible={inp.is_displayed()}")
 
 driver.save_screenshot("debug_after_first_login.png")
 
-# Try each password XPath separately
-password_xpaths = [
+# Find password field
+p = None
+for xpath in [
     '//input[@type="password"]',
     '//input[contains(@placeholder,"Password")]',
     '//input[contains(@placeholder,"password")]',
     '//input[contains(@placeholder,"PASSWORD")]',
-]
-p = None
-for xpath in password_xpaths:
+]:
     try:
-        p = WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.XPATH, xpath)))
-        print(f"Password field found with: {xpath}")
+        p = WebDriverWait(driver, 12).until(EC.presence_of_element_located((By.XPATH, xpath)))
+        print(f"Password field found: {xpath}")
         break
     except TimeoutException:
         print(f"Not found: {xpath}")
-        continue
 
 if not p:
-    # Commit screenshot so we can see it
     subprocess.run(["git", "add", "debug_after_first_login.png"], capture_output=True)
-    subprocess.run(["git", "commit", "-m", "debug: after first login screenshot [skip ci]"], capture_output=True)
+    subprocess.run(["git", "commit", "-m", "debug: after first login [skip ci]"], capture_output=True)
     subprocess.run(["git", "push"], capture_output=True)
     driver.quit()
     raise RuntimeError("Password field not found. Check debug_after_first_login.png in repo.")
@@ -245,13 +276,20 @@ print("Password entered.")
 time.sleep(1)
 
 # Second LOGIN
-try:
-    btn = wait.until(EC.element_to_be_clickable((By.XPATH,
-        "//*[normalize-space(text())='LOGIN' or normalize-space(text())='Login']")))
-    driver.execute_script("arguments[0].click();", btn)
-    print("Second LOGIN clicked.")
-except Exception as e:
-    print(f"Second LOGIN error: {e}")
+print("Clicking second LOGIN...")
+for xpath in [
+    "//*[normalize-space(text())='LOGIN']",
+    "//*[normalize-space(text())='Login']",
+    "//button[contains(.,'LOGIN')]",
+    "//button[@type='submit']",
+]:
+    try:
+        btn = WebDriverWait(driver, 8).until(EC.element_to_be_clickable((By.XPATH, xpath)))
+        btn.click()
+        print("Second LOGIN clicked.")
+        break
+    except Exception:
+        continue
 
 print("Waiting for dashboard...")
 time.sleep(12)
