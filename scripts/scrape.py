@@ -49,10 +49,14 @@ VAR_NAME = "CAPTCHA_ANSWER"
 def get_captcha_answer():
     """Return current value of CAPTCHA_ANSWER variable, or None."""
     url = f"https://api.github.com/repos/{GH_REPO}/actions/variables/{VAR_NAME}"
-    r = requests.get(url, headers=GH_HEADERS, timeout=10)
-    if r.status_code == 200:
-        val = r.json().get("value", "").strip()
-        return val if val and val != "WAITING" else None
+    try:
+        r = requests.get(url, headers=GH_HEADERS, timeout=10)
+        print(f"  [poll] status={r.status_code} body={r.text[:200]}")
+        if r.status_code == 200:
+            val = r.json().get("value", "").strip()
+            return val if val and val != "WAITING" else None
+    except Exception as e:
+        print(f"  [poll] request error: {e}")
     return None
 
 def clear_captcha_answer():
