@@ -1,0 +1,16 @@
+{
+  "last_updated": "2026-05-09T17:58:41.051751+00:00",
+  "semester": "2026EVESEM",
+  "endpoints_fetched": [
+    "attendance_detail",
+    "attendance_registration_info"
+  ],
+  "endpoints_failed": [
+    "bank_info",
+    "fee_active_events",
+    "exam_result",
+    "grade_card",
+    "personal_info",
+    "subject_faculty"
+  ]
+}

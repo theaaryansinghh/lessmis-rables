@@ -1,0 +1,32 @@
+{
+  "status": {
+    "responseStatus": "Success",
+    "errors": null,
+    "identifier": null
+  },
+  "response": {
+    "client": "JUIT",
+    "headerlist": [
+      {
+        "branchdesc": "MATHEMATICS AND COMPUTING",
+        "name": "AARYAN SINGH",
+        "programdesc": "B.TECH.(BACHELOR OF TECHNOLOGY)",
+        "stynumber": "4"
+      }
+    ],
+    "semlist": [
+      {
+        "registrationcode": "2026EVESEM",
+        "registrationid": "JURUM25090000001"
+      },
+      {
+        "registrationcode": "2025ODDSEM",
+        "registrationid": "JURUM25030000001"
+      },
+      {
+        "registrationcode": "2025EVESEM",
+        "registrationid": "JURUM24090000001"
+      }
+    ]
+  }
+}
