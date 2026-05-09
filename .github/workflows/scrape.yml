@@ -1,11 +1,12 @@
-name: "Step 1 — Get Captcha"
+name: "Scrape Portal Data"
 
 on:
   workflow_dispatch:
 
 jobs:
-  get-captcha:
+  scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repo
@@ -17,24 +18,25 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install selenium webdriver-manager requests urllib3
+        run: pip install selenium webdriver-manager requests urllib3
 
       - name: Install Chrome
         run: |
           wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
           sudo apt-get install -y ./google-chrome-stable_current_amd64.deb
 
-      - name: Run Step 1 (fetch captcha)
+      - name: Run scraper
         env:
           JUIT_USERNAME: ${{ secrets.JUIT_USERNAME }}
           JUIT_PASSWORD: ${{ secrets.JUIT_PASSWORD }}
-        run: python scripts/step1_get_captcha.py
+          GH_TOKEN:      ${{ secrets.GH_PAT }}
+          GH_REPO:       ${{ github.repository }}
+        run: python scripts/scrape.py
 
-      - name: Commit captcha image
+      - name: Commit scraped data
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add captcha.png session_state.json
-          git commit -m "chore: update captcha [skip ci]" || echo "Nothing to commit"
+          git add juit_data/
+          git commit -m "data: refresh $(date -u '+%Y-%m-%d %H:%M UTC') [skip ci]" || echo "Nothing new"
           git push
